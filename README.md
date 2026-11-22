@@ -179,3 +179,40 @@ ParseResult parse_line(std::string_view line);
 逐行读取不会保存整个文件，内存主要随最长一行变化。当前未设置行长度上限，每条坏行都会打印诊断；这是本地学习版本，后续处理大规模数据时可以增加长度限制与诊断限额。读权限不足和读到一半出现 I/O 故障的处理分支已写入，但不属于当前自动化测试覆盖范围。
 
 建议阅读顺序：`record.h` → `parser.h` → `parser.cpp` → `main.cpp` → 测试。下一步支持多文件串行分析、筛选和可配置的 Top-K。
+
+## 手工样例与大数据生成
+
+`data/sample.log` 是基础演示。`data/samples/` 里的小样例可以直接用 `./build/netlog --input 文件路径` 运行，并按下表核对。
+
+| 文件 | 预期结果 |
+|---|---|
+| `aggregation.log` | 有效 5 行。`dev-a` 有 3 次请求、0 次错误、平均 133.67 µs、最大 201 µs。`dev-z` 有 2 次请求、1 次错误、平均 600.00 µs、最大 900 µs。重复记录照常计数，`REQ_OK` 共 3 次。 |
+| `top-k.log` | 有效 5 行。`Z_EVENT` 2 次居首，`A_EVENT` 和 `B_EVENT` 各 1 次排在其后。同频的 `C_EVENT` 超出前三。 |
+| `mixed.log` | 共 6 行，有效 2 行，非法 4 行。第 2～5 行分别是负耗时、非法级别、非法设备 ID、字段数错误。`dev01` 错误率 50%，平均 250.00 µs。 |
+
+使用 Python 3 生成可复现的模拟日志。在项目根目录执行：
+
+```bash
+python3 scripts/generate_logs.py data/generated/large.log --lines 1000000 --devices 1000 --seed 42
+./build/netlog --input data/generated/large.log
+```
+
+相同的参数和 Python 环境会产生相同的日志。生成器逐行写入，已存在的输出文件会保留。`--devices` 指可抽取的设备 ID 数量。使用 `--bad-every 500` 可以固定每 500 行放入一条坏行，`--lines` 包含这些坏行。`data/generated/` 已被 Git 忽略。
+
+## 保存测试报告
+
+CTest 分别运行解析用例、统计用例和命令行场景。测试代码在 `tests/`，手工样例在
+`data/samples/`。运行生成的报告放在已被 Git 忽略的 `build/test-results/`。
+
+```bash
+cmake --build build --parallel
+mkdir -p build/test-results
+stamp=$(date +%Y%m%d-%H%M%S)
+ctest --test-dir build --output-on-failure \
+  --output-junit "test-results/$stamp.xml" \
+  --output-log "build/test-results/$stamp.log"
+```
+
+XML 使用 JUnit 格式，记录每个测试名、结果和耗时，需要 CTest 3.21 或更新版本。
+文本日志记录每项用例的运行输出及耗时。单个测试的耗时包含启动和测试框架开销，
+大文件吞吐量的实验应单独测量。

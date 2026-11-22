@@ -17,8 +17,12 @@ add_library(netlog_parser src/parser.cpp)
 target_include_directories(netlog_parser PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 netlog_warnings(netlog_parser)
 
-add_executable(netlog src/main.cpp src/stats.cpp)
-target_link_libraries(netlog PRIVATE netlog_parser)
+add_library(netlog_stats src/stats.cpp)
+target_include_directories(netlog_stats PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+netlog_warnings(netlog_stats)
+
+add_executable(netlog src/main.cpp)
+target_link_libraries(netlog PRIVATE netlog_parser netlog_stats)
 netlog_warnings(netlog)
 
 include(CTest)
@@ -26,11 +30,37 @@ if(BUILD_TESTING)
     add_executable(test_parser tests/test_parser.cpp)
     target_link_libraries(test_parser PRIVATE netlog_parser)
     netlog_warnings(test_parser)
-    add_test(NAME parser COMMAND test_parser)
-    add_test(NAME cli
-        COMMAND "${CMAKE_COMMAND}"
-            "-DNETLOG=$<TARGET_FILE:netlog>"
-            "-DSAMPLE=${CMAKE_CURRENT_SOURCE_DIR}/data/sample.log"
-            "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-data"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.cmake")
+    foreach(parser_case IN ITEMS
+        valid_fields numeric_maxima whitespace_and_zeros bom embedded_nul owned_strings
+        empty_line blank_line one_field missing_field extra_field comment
+        negative_timestamp signed_timestamp fractional_timestamp timestamp_suffix
+        hex_timestamp scientific_timestamp timestamp_overflow huge_timestamp dotted_id
+        slash_id lowercase_level unknown_level dotted_event negative_duration signed_duration
+        fractional_duration duration_suffix hex_duration duration_overflow huge_duration first_error
+    )
+        add_test(NAME parser.${parser_case} COMMAND test_parser "${parser_case}")
+    endforeach()
+
+    add_executable(test_stats tests/test_stats.cpp)
+    target_link_libraries(test_stats PRIVATE netlog_stats)
+    netlog_warnings(test_stats)
+    foreach(stats_case IN ITEMS device_totals event_ranking overflow_preserves_totals)
+        add_test(NAME stats.${stats_case} COMMAND test_stats "${stats_case}")
+    endforeach()
+
+    foreach(cli_case IN ITEMS
+        sample empty crlf no_final_newline continue_after_bad_lines all_invalid
+        top_cutoff_and_device_order total_duration_overflow missing_file directory
+        no_arguments missing_input_value unknown_option extra_option help
+        fixture_aggregation fixture_top-k fixture_mixed
+    )
+        add_test(NAME cli.${cli_case}
+            COMMAND "${CMAKE_COMMAND}"
+                "-DNETLOG=$<TARGET_FILE:netlog>"
+                "-DSAMPLE=${CMAKE_CURRENT_SOURCE_DIR}/data/sample.log"
+                "-DSAMPLES_DIR=${CMAKE_CURRENT_SOURCE_DIR}/data/samples"
+                "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-data"
+                "-DCASE=${cli_case}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.cmake")
+    endforeach()
 endif()
