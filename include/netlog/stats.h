@@ -25,6 +25,7 @@ public:
     using EventCount = std::pair<std::string, std::uint64_t>;
 
     void add(const Record& record);
+    void merge(const Stats& other);
     const DeviceTable& devices() const;
     std::vector<EventCount> top_events(std::size_t limit) const;
 

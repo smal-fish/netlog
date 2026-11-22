@@ -2,7 +2,7 @@
 
 项目简称 `netlog`。读取模拟设备运行日志，逐步实现设备指标统计、事件 Top-K 和按文件分配任务的多线程分析，作为个人工程学习项目。
 
-**当前支持单文件和多文件串行分析。** 程序逐行读取并校验日志，输出读入计数、设备指标和事件 Top-3。
+**当前支持单文件串行分析，以及多文件串行或并行分析。** 程序逐行读取并校验日志，输出读入计数、设备指标和事件 Top-3。
 
 ## 日志格式
 
@@ -102,10 +102,10 @@ wsl -d Ubuntu --cd /home/lenovo/projects/netlog
 目录示例：
 
 ~~~bash
-./build/netlog --input data/samples
+./build/netlog --input data/samples --threads 4
 ~~~
 
-程序按文件名顺序读取目录当前层的小写 .log 普通文件，跳过子目录与符号链接。所有文件共用设备与事件统计表，最后输出一份报告。每个文件的坏行从第 1 行起定位。目录中没有匹配文件或发生文件访问错误时，以退出码 3 结束。直接指定单个普通文件时允许任意扩展名。
+程序按文件名顺序读取目录当前层的小写 .log 普通文件，跳过子目录与符号链接。默认用一个线程串行处理。`--threads N` 要求正整数，实际并发数最多等于文件数。工作线程通过原子下标领取文件，各自统计设备指标和完整事件频次。主线程等待所有线程结束，再合并结果并计算全局 Top-3。并行模式按文件顺序输出缓存的坏行诊断，诊断占用的内存随坏行数增加。每个文件的坏行从第 1 行起定位。目录中没有匹配文件或发生文件访问错误时，以退出码 3 结束。直接指定单个普通文件时允许任意扩展名。
 
 样例的标准输出：
 
@@ -206,6 +206,54 @@ python3 scripts/generate_logs.py data/generated/large.log --lines 1000000 --devi
 ```
 
 相同的参数和 Python 环境会产生相同的日志。生成器逐行写入，已存在的输出文件会保留。`--devices` 指可抽取的设备 ID 数量。使用 `--bad-every 500` 可以固定每 500 行放入一条坏行，`--lines` 包含这些坏行。`data/generated/` 已被 Git 忽略。
+
+## 多线程性能实测
+
+在 WSL2 / Ubuntu、Intel Core i9-12900H（20 个逻辑 CPU）上，用 GCC 13.3.0 构建 Release 版。两档输入各有 8 个等长文件，约 35 MB 和 350 MB。每种线程数预热一次，交替运行 5 轮取墙钟耗时的中位数。加速比以同一构建、同一输入的 1 线程结果为基准。
+
+| 线程数 | 100 万行中位耗时 | 加速比 | 1000 万行中位耗时 | 加速比 |
+|---:|---:|---:|---:|---:|
+| 1 | 0.1615 s | 1.00× | 1.5698 s | 1.00× |
+| 2 | 0.0837 s | 1.93× | 0.8189 s | 1.92× |
+| 4 | 0.0467 s | 3.46× | 0.4331 s | 3.62× |
+| 8 | 0.0340 s | 4.75× | 0.2897 s | 5.42× |
+
+各线程数的完整标准输出均与串行基线逐字节一致。另一次手动复测中，1000 万行的 1 线程和 8 线程分别跑了 1.771 s 和 0.327 s，约为 5.42×。对比用 `time` 输出里的 `real`。`user` 和 `sys` 分别是所有线程累计的用户态和内核态 CPU 时间。以上结果对应这台机器上的预热输入，单个文件按当前的任务划分只会使用一个线程。
+
+在 Ubuntu / WSL 的 Bash 中，可以用固定种子重新生成两档数据。百万行数据的每个分片在千万行数据中重复 10 次，因此两档的设备和事件分布相同。
+
+~~~bash
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --parallel
+
+mkdir -p data/generated
+bench=$(mktemp -d data/generated/bench-XXXXXX)
+mkdir -p "$bench/1m" "$bench/10m"
+python3 scripts/generate_logs.py "$bench/source.log" \
+  --lines 1000000 --devices 1000 --seed 42
+split -l 125000 -d --additional-suffix=.log "$bench/source.log" "$bench/1m/part-"
+
+for part in "$bench"/1m/*.log; do
+  for repeat in {1..10}; do
+    cat "$part"
+  done > "$bench/10m/${part##*/}"
+done
+~~~
+
+先预热，再逐次查看 `real`。换成 `dataset="$bench/1m"` 可以跑百万行档。
+
+~~~bash
+dataset="$bench/10m"
+for threads in 1 2 4 8; do
+  ./build-release/netlog --input "$dataset" --threads "$threads" > /dev/null
+done
+for round in {1..5}; do
+  for threads in 1 2 4 8; do
+    echo "round=$round threads=$threads"
+    time ./build-release/netlog --input "$dataset" --threads "$threads" > /dev/null
+  done
+done
+~~~
 
 ## 保存测试报告
 

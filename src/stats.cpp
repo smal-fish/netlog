@@ -5,14 +5,19 @@
 #include <stdexcept>
 
 namespace netlog {
+namespace {
+
+void check_duration_sum(const std::string& id, std::uint64_t total, std::uint64_t extra) {
+    if (extra > std::numeric_limits<std::uint64_t>::max() - total) {
+        throw std::overflow_error("total duration for device " + id + " exceeds uint64 range");
+    }
+}
+
+}  // namespace
 
 void Stats::add(const Record& record) {
     auto& device = devices_[record.device_id];
-    if (record.duration_us > std::numeric_limits<std::uint64_t>::max()
-                             - device.total_duration_us) {
-        throw std::overflow_error("total duration for device " + record.device_id
-                                  + " exceeds uint64 range");
-    }
+    check_duration_sum(record.device_id, device.total_duration_us, record.duration_us);
 
     ++events_[record.event_code];
     ++device.requests;
@@ -21,6 +26,26 @@ void Stats::add(const Record& record) {
     }
     device.total_duration_us += record.duration_us;
     device.max_duration_us = std::max(device.max_duration_us, record.duration_us);
+}
+
+void Stats::merge(const Stats& other) {
+    // 先检查所有设备，避免溢出时只合并了一部分统计。
+    for (const auto& [id, incoming] : other.devices_) {
+        const auto existing = devices_.find(id);
+        if (existing != devices_.end()) {
+            check_duration_sum(id, existing->second.total_duration_us, incoming.total_duration_us);
+        }
+    }
+    for (const auto& [id, incoming] : other.devices_) {
+        auto& device = devices_[id];
+        device.requests += incoming.requests;
+        device.errors += incoming.errors;
+        device.total_duration_us += incoming.total_duration_us;
+        device.max_duration_us = std::max(device.max_duration_us, incoming.max_duration_us);
+    }
+    for (const auto& [event, count] : other.events_) {
+        events_[event] += count;
+    }
 }
 
 const Stats::DeviceTable& Stats::devices() const {

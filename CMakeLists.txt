@@ -21,8 +21,9 @@ add_library(netlog_stats src/stats.cpp)
 target_include_directories(netlog_stats PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 netlog_warnings(netlog_stats)
 
+find_package(Threads REQUIRED)
 add_executable(netlog src/main.cpp)
-target_link_libraries(netlog PRIVATE netlog_parser netlog_stats)
+target_link_libraries(netlog PRIVATE netlog_parser netlog_stats Threads::Threads)
 netlog_warnings(netlog)
 
 include(CTest)
@@ -44,7 +45,7 @@ if(BUILD_TESTING)
     add_executable(test_stats tests/test_stats.cpp)
     target_link_libraries(test_stats PRIVATE netlog_stats)
     netlog_warnings(test_stats)
-    foreach(stats_case IN ITEMS device_totals event_ranking overflow_preserves_totals)
+    foreach(stats_case IN ITEMS device_totals event_ranking overflow_preserves_totals merge_totals merge_overflow)
         add_test(NAME stats.${stats_case} COMMAND test_stats "${stats_case}")
     endforeach()
 
@@ -52,6 +53,7 @@ if(BUILD_TESTING)
         sample empty crlf no_final_newline continue_after_bad_lines all_invalid
         top_cutoff_and_device_order total_duration_overflow missing_file directory directory_split directory_overflow
         no_arguments missing_input_value unknown_option extra_option help
+        parallel_matches_serial parallel_single_file parallel_overflow parallel_worker_error
         fixture_aggregation fixture_top-k fixture_mixed
     )
         add_test(NAME cli.${cli_case}
