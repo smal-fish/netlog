@@ -2,7 +2,7 @@
 
 项目简称 `netlog`。读取模拟设备运行日志，逐步实现设备指标统计、事件 Top-K 和按文件分配任务的多线程分析，作为个人工程学习项目。
 
-**当前阶段：单线程、单文件的基础读取与格式校验。** 已完成日志格式约定、结构化解析、坏行诊断、有效/非法记录计数、CMake 构建和测试。多文件、筛选、业务指标、Top-K、多线程尚未实现。
+**当前阶段为单文件串行分析。** 程序逐行读取并校验日志，输出读入计数、设备指标和事件 Top-3。
 
 ## 日志格式
 
@@ -31,10 +31,12 @@ timestamp device_id level event_code duration_us
 ├── docs/log-format.md     日志协议与统计口径
 ├── include/netlog/
 │   ├── record.h           日志级别与单条记录结构
-│   └── parser.h           解析接口、错误类型、结果类型
+│   ├── parser.h           解析接口、错误类型、结果类型
+│   └── stats.h            设备与事件统计接口
 ├── src/
 │   ├── parser.cpp         字段拆分、校验、类型转换
-│   └── main.cpp           参数处理、文件读取、诊断和计数
+│   ├── main.cpp           参数处理、文件读取、诊断和报告输出
+│   └── stats.cpp          累加统计并计算事件排行
 ├── data/sample.log        5 条合法记录和 1 条坏行
 ├── tests/
 │   ├── test_parser.cpp    解析规则和数据所有权测试
@@ -42,7 +44,7 @@ timestamp device_id level event_code duration_us
 └── build/                 本地构建生成，不提交
 ```
 
-后续需要时再增加 `stats.h/.cpp`、`analyzer.h/.cpp`、`report.h/.cpp`。当前不创建没有实际内容的类和模块。
+后续实现多文件和筛选时，再按职责拆分读取与报告模块。
 
 ## 构建与运行
 
@@ -103,7 +105,17 @@ wsl -d Ubuntu --cd /home/lenovo/projects/netlog
 read_lines=6
 valid_records=5
 invalid_records=1
+devices:
+device_id requests errors error_rate avg_us max_us
+dev01 3 1 33.33% 400.00 900
+dev02 2 1 50.00% 300.00 400
+top_events (up to 3):
+REQ_OK 3
+CRC_ERROR 1
+TIMEOUT 1
 ```
+
+设备按 ID 升序排列。错误率为 `ERROR` 记录数除以该设备的有效记录数，平均耗时包含失败请求，耗时单位为微秒。事件按频次降序排列，同频按事件码字典序升序，最多显示三项。每台设备的总耗时超过 `uint64_t` 范围时，程序报错并以退出码 4 结束。
 
 标准错误流另外报告第 6 行缺字段。两条输出流在终端的显示顺序不作保证。程序界面暂用英文，便于跨终端验证，说明文档和关键代码注释使用中文。
 
@@ -166,4 +178,4 @@ ParseResult parse_line(std::string_view line);
 
 逐行读取不会保存整个文件，内存主要随最长一行变化。当前未设置行长度上限，每条坏行都会打印诊断；这是本地学习版本，后续处理大规模数据时可以增加长度限制与诊断限额。读权限不足和读到一半出现 I/O 故障的处理分支已写入，但不属于当前自动化测试覆盖范围。
 
-建议阅读顺序：`record.h` → `parser.h` → `parser.cpp` → `main.cpp` → 测试。下一步添加设备统计和事件计数，让每条成功解析的 `Record` 更新统计表。
+建议阅读顺序：`record.h` → `parser.h` → `parser.cpp` → `main.cpp` → 测试。下一步支持多文件串行分析、筛选和可配置的 Top-K。

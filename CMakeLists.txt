@@ -17,7 +17,7 @@ add_library(netlog_parser src/parser.cpp)
 target_include_directories(netlog_parser PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 netlog_warnings(netlog_parser)
 
-add_executable(netlog src/main.cpp)
+add_executable(netlog src/main.cpp src/stats.cpp)
 target_link_libraries(netlog PRIVATE netlog_parser)
 netlog_warnings(netlog)
 

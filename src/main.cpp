@@ -1,9 +1,11 @@
 #include "netlog/parser.h"
+#include "netlog/stats.h"
 
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -28,6 +30,25 @@ void print_summary(const ReadSummary& summary) {
               << "invalid_records=" << summary.invalid_records << '\n';
 }
 
+void print_report(std::ostream& out, const netlog::Stats& stats) {
+    out << "devices:\n"
+        << "device_id requests errors error_rate avg_us max_us\n";
+    out << std::fixed << std::setprecision(2);
+    for (const auto& [id, device] : stats.devices()) {
+        const auto error_rate = 100.0L * device.errors / device.requests;
+        const auto average_us = static_cast<long double>(device.total_duration_us)
+                                / device.requests;
+        out << id << ' ' << device.requests << ' ' << device.errors << ' '
+            << error_rate << "% " << average_us << ' '
+            << device.max_duration_us << '\n';
+    }
+
+    out << "top_events (up to 3):\n";
+    for (const auto& [event, count] : stats.top_events(3)) {
+        out << event << ' ' << count << '\n';
+    }
+}
+
 int analyze_file(const std::filesystem::path& path) {
     std::error_code ec;
     const bool regular = std::filesystem::is_regular_file(path, ec);
@@ -50,6 +71,7 @@ int analyze_file(const std::filesystem::path& path) {
     }
 
     ReadSummary summary;
+    netlog::Stats stats;
     std::string line;
     while (std::getline(input, line)) {
         ++summary.read_lines;
@@ -60,9 +82,8 @@ int analyze_file(const std::filesystem::path& path) {
                       << netlog::error_message(*error) << '\n';
             continue;
         }
+        stats.add(std::get<netlog::Record>(result));
         ++summary.valid_records;
-        // result 中已包含完整 Record；下一阶段在此调用统计模块。
-        // 本阶段只验证读入，不将所有记录积存在内存中。
     }
 
     if (input.bad() || (input.fail() && !input.eof())) {
@@ -72,6 +93,7 @@ int analyze_file(const std::filesystem::path& path) {
         return 3;
     }
     print_summary(summary);
+    print_report(std::cout, stats);
     return 0;
 }
 
