@@ -106,6 +106,36 @@ elseif(CASE STREQUAL "parallel_matches_serial")
         check_cli(parallel_matches_serial 0 "${expected}" "${diagnostics}"
             --input "${TEST_DIR}" --threads "${threads}")
     endforeach()
+elseif(CASE STREQUAL "segment_boundaries")
+    set(chunk 16777216)
+    set(row "0 dev INFO OK 10\n")
+    string(LENGTH "${row}" row_size)
+    math(EXPR rows "${chunk} / ${row_size} - 1")
+    string(REPEAT "${row}" "${rows}" prefix)
+
+    # a.log 的 16 MiB 切点落在 CR 与 LF 之间。
+    math(EXPR a_padding "${chunk} - ${rows} * ${row_size} - 1")
+    string(REPEAT " " "${a_padding}" a_spaces)
+    file(WRITE "${TEST_DIR}/a.log" "${prefix}${a_spaces}\r\nbad\n1 dev ERROR TIMEOUT 30")
+
+    # b.log 的切点恰好是最后一个坏行的行首，且这一行没有末尾换行。
+    math(EXPR b_padding "${chunk} - (${rows} + 1) * ${row_size}")
+    string(REPEAT " " "${b_padding}" b_spaces)
+    file(WRITE "${TEST_DIR}/b.log" "${prefix}0 dev INFO OK 10${b_spaces}\nbad")
+    file(WRITE "${TEST_DIR}/z.log" "bad\n1 tiny INFO NEW 2\n")
+
+    math(EXPR all_lines "2 * ${rows} + 7")
+    math(EXPR valid "2 * ${rows} + 3")
+    math(EXPR dev_requests "2 * ${rows} + 2")
+    math(EXPR ok_count "2 * ${rows} + 1")
+    math(EXPR line1 "${rows} + 1")
+    math(EXPR line2 "${rows} + 2")
+    set(expected "read_lines=${all_lines}\nvalid_records=${valid}\ninvalid_records=4\n${device_header}dev ${dev_requests} 1 0.00% 10.00 30\ntiny 1 0 0.00% 2.00 2\n${event_header}OK ${ok_count}\nNEW 1\nTIMEOUT 1\n")
+    set(diagnostics "a[.]log:${line1}: expected exactly 5 fields\n[^\n]*a[.]log:${line2}: expected exactly 5 fields\n[^\n]*b[.]log:${line2}: expected exactly 5 fields\n[^\n]*z[.]log:1: expected exactly 5 fields\n$")
+    foreach(threads IN ITEMS 1 2 8)
+        check_cli(segment_boundaries 0 "${expected}" "${diagnostics}"
+            --input "${TEST_DIR}" --threads "${threads}")
+    endforeach()
 elseif(CASE STREQUAL "parallel_single_file")
     check_cli(parallel_single_file 0 "read_lines=6\nvalid_records=5\ninvalid_records=1\n${device_header}dev01 3 1 33.33% 400.00 900\ndev02 2 1 50.00% 300.00 400\n${event_header}REQ_OK 3\nCRC_ERROR 1\nTIMEOUT 1\n"
         ":6: expected exactly 5 fields" --threads 8 --input "${SAMPLE}")
