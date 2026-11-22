@@ -1,6 +1,7 @@
 #include "netlog/parser.h"
 #include "netlog/stats.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -9,7 +10,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <system_error>
+#include <vector>
 
 namespace {
 
@@ -20,7 +21,7 @@ struct ReadSummary {
 };
 
 void print_usage(std::ostream& out) {
-    out << "Usage: netlog --input <log-file>\n"
+    out << "Usage: netlog --input <file-or-directory>\n"
         << "       netlog --help\n";
 }
 
@@ -49,19 +50,31 @@ void print_report(std::ostream& out, const netlog::Stats& stats) {
     }
 }
 
-int analyze_file(const std::filesystem::path& path) {
-    std::error_code ec;
-    const bool regular = std::filesystem::is_regular_file(path, ec);
-    if (ec) {
-        std::cerr << "Cannot inspect input file: " << path.string()
-                  << ": " << ec.message() << '\n';
-        return 3;
-    }
-    if (!regular) {
-        std::cerr << "Input is not a regular file: " << path.string() << '\n';
-        return 3;
-    }
+namespace fs = std::filesystem;
 
+std::vector<fs::path> collect_files(const fs::path& input) {
+    const auto status = fs::status(input);
+    if (fs::is_regular_file(status)) {
+        return {input};
+    }
+    if (!fs::is_directory(status)) {
+        std::cerr << "Cannot inspect input file or directory: " << input.string() << '\n';
+        return {};
+    }
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(input)) {
+        if (entry.path().extension() == ".log" && fs::is_regular_file(entry.symlink_status())) {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    if (files.empty()) {
+        std::cerr << "No .log files in directory: " << input.string() << '\n';
+    }
+    return files;
+}
+
+int analyze_file(const fs::path& path, ReadSummary& summary, netlog::Stats& stats) {
     // binary 保留原始字节；getline 按 LF 分行，解析器接受行末 CR。
     // ifstream 在离开作用域时自动关闭文件（RAII）。
     std::ifstream input(path, std::ios::binary);
@@ -70,15 +83,15 @@ int analyze_file(const std::filesystem::path& path) {
         return 3;
     }
 
-    ReadSummary summary;
-    netlog::Stats stats;
+    std::uint64_t line_number = 0;
     std::string line;
     while (std::getline(input, line)) {
+        ++line_number;
         ++summary.read_lines;
         const auto result = netlog::parse_line(line);
         if (const auto* error = std::get_if<netlog::ParseError>(&result)) {
             ++summary.invalid_records;
-            std::cerr << path.string() << ':' << summary.read_lines << ": "
+            std::cerr << path.string() << ':' << line_number << ": "
                       << netlog::error_message(*error) << '\n';
             continue;
         }
@@ -91,6 +104,29 @@ int analyze_file(const std::filesystem::path& path) {
                   << " (summary is partial)\n";
         print_summary(summary);
         return 3;
+    }
+    return 0;
+}
+
+int analyze_input(const fs::path& input) {
+    std::vector<fs::path> files;
+    try {
+        files = collect_files(input);
+    } catch (const fs::filesystem_error& error) {
+        std::cerr << "Cannot inspect input file or directory: " << error.what() << '\n';
+        return 3;
+    }
+    if (files.empty()) {
+        return 3;
+    }
+
+    ReadSummary summary;
+    netlog::Stats stats;
+    for (const auto& path : files) {
+        const int status = analyze_file(path, summary, stats);
+        if (status != 0) {
+            return status;
+        }
     }
     print_summary(summary);
     print_report(std::cout, stats);
@@ -108,7 +144,7 @@ int run(int argc, char* argv[]) {
         print_usage(std::cerr);
         return 2;
     }
-    return analyze_file(std::filesystem::path(argv[2]));
+    return analyze_input(argv[2]);
 }
 
 }  // namespace

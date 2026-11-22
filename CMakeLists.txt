@@ -50,7 +50,7 @@ if(BUILD_TESTING)
 
     foreach(cli_case IN ITEMS
         sample empty crlf no_final_newline continue_after_bad_lines all_invalid
-        top_cutoff_and_device_order total_duration_overflow missing_file directory
+        top_cutoff_and_device_order total_duration_overflow missing_file directory directory_split directory_overflow
         no_arguments missing_input_value unknown_option extra_option help
         fixture_aggregation fixture_top-k fixture_mixed
     )
