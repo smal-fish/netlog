@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -20,27 +21,63 @@
 
 namespace {
 
+struct Filter {
+    std::string_view device;
+    std::optional<std::int64_t> since;
+    std::optional<std::int64_t> until;
+
+    bool active() const {
+        return !device.empty() || since.has_value() || until.has_value();
+    }
+
+    bool matches(const netlog::Record& record) const {
+        return (device.empty() || record.device_id == device)
+            && (!since || record.timestamp >= *since)
+            && (!until || record.timestamp < *until);
+    }
+};
+
+struct AnalysisOptions {
+    std::size_t threads = 1;
+    std::size_t top_k = 3;
+    std::int64_t bucket_seconds = 0;
+    Filter filter;
+};
+
 struct ReadSummary {
     std::uint64_t read_lines = 0;
     std::uint64_t valid_records = 0;
+    std::uint64_t matched_records = 0;
     std::uint64_t invalid_records = 0;
 
     void merge(const ReadSummary& other) {
         read_lines += other.read_lines;
         valid_records += other.valid_records;
+        matched_records += other.matched_records;
         invalid_records += other.invalid_records;
     }
 };
 
 void print_usage(std::ostream& out) {
     out << "Usage: netlog --input <file-or-directory> [--threads N] [--top K]\n"
+        << "       [--device ID] [--since UNIX_SEC] [--until UNIX_SEC] [--bucket SECONDS]\n"
         << "       netlog --help\n";
 }
 
-void print_summary(const ReadSummary& summary) {
+void print_summary(const ReadSummary& summary, bool show_matched) {
     std::cout << "read_lines=" << summary.read_lines << '\n'
               << "valid_records=" << summary.valid_records << '\n'
               << "invalid_records=" << summary.invalid_records << '\n';
+    if (show_matched) {
+        std::cout << "matched_records=" << summary.matched_records << '\n';
+    }
+}
+
+void print_metrics(std::ostream& out, const netlog::DeviceStats& totals) {
+    const auto error_rate = 100.0L * totals.errors / totals.requests;
+    const auto average_us = static_cast<long double>(totals.total_duration_us) / totals.requests;
+    out << totals.requests << ' ' << totals.errors << ' ' << error_rate << "% "
+        << average_us << ' ' << totals.max_duration_us << '\n';
 }
 
 void print_report(std::ostream& out, const netlog::Stats& stats, std::size_t top_k) {
@@ -48,12 +85,17 @@ void print_report(std::ostream& out, const netlog::Stats& stats, std::size_t top
         << "device_id requests errors error_rate avg_us max_us\n";
     out << std::fixed << std::setprecision(2);
     for (const auto& [id, device] : stats.devices()) {
-        const auto error_rate = 100.0L * device.errors / device.requests;
-        const auto average_us = static_cast<long double>(device.total_duration_us)
-                                / device.requests;
-        out << id << ' ' << device.requests << ' ' << device.errors << ' '
-            << error_rate << "% " << average_us << ' '
-            << device.max_duration_us << '\n';
+        out << id << ' ';
+        print_metrics(out, device);
+    }
+
+    if (stats.bucket_seconds() > 0) {
+        out << "time_windows (" << stats.bucket_seconds() << " seconds each):\n"
+            << "start_ts requests errors error_rate avg_us max_us\n";
+        for (const auto& [start, totals] : stats.buckets()) {
+            out << start << ' ';
+            print_metrics(out, totals);
+        }
     }
 
     out << "top_events (up to " << top_k << "):\n";
@@ -179,7 +221,7 @@ void print_file_error(std::ostream& out, const fs::path& path, FileStatus status
 
 template <typename NextLine, typename ReportBadLine>
 void read_records(NextLine next_line, ReportBadLine report_bad_line,
-                  ReadSummary& summary, netlog::Stats& stats) {
+                  ReadSummary& summary, netlog::Stats& stats, const Filter& filter) {
     std::uint64_t line_number = 0;
     std::string line;
     while (next_line(line)) {
@@ -191,13 +233,17 @@ void read_records(NextLine next_line, ReportBadLine report_bad_line,
             report_bad_line(line_number, *error);
             continue;
         }
-        stats.add(std::get<netlog::Record>(result));
         ++summary.valid_records;
+        const auto& record = std::get<netlog::Record>(result);
+        if (filter.matches(record)) {
+            stats.add(record);
+            ++summary.matched_records;
+        }
     }
 }
 
 FileStatus analyze_file(const fs::path& path, ReadSummary& summary, netlog::Stats& stats,
-                        std::ostream& diagnostics) {
+                        std::ostream& diagnostics, const Filter& filter) {
     // binary 保留原始字节；getline 按 LF 分行，解析器接受行末 CR。
     // ifstream 在离开作用域时自动关闭文件（RAII）。
     std::ifstream input(path, std::ios::binary);
@@ -211,7 +257,7 @@ FileStatus analyze_file(const fs::path& path, ReadSummary& summary, netlog::Stat
         [&](std::uint64_t number, netlog::ParseError error) {
             print_bad_line(diagnostics, path, number, error);
         },
-        summary, stats);
+        summary, stats, filter);
 
     if (input.bad() || (input.fail() && !input.eof())) {
         print_file_error(diagnostics, path, FileStatus::ReadFailed);
@@ -221,9 +267,9 @@ FileStatus analyze_file(const fs::path& path, ReadSummary& summary, netlog::Stat
 }
 
 FileStatus analyze_serial(const std::vector<fs::path>& files, ReadSummary& summary,
-                          netlog::Stats& stats) {
+                          netlog::Stats& stats, const Filter& filter) {
     for (const auto& path : files) {
-        const auto status = analyze_file(path, summary, stats, std::cerr);
+        const auto status = analyze_file(path, summary, stats, std::cerr, filter);
         if (status != FileStatus::Ok) {
             return status;
         }
@@ -232,7 +278,7 @@ FileStatus analyze_serial(const std::vector<fs::path>& files, ReadSummary& summa
 }
 
 FileStatus analyze_segment(const fs::path& path, const FileSegment& segment,
-                           SegmentResult& result, netlog::Stats& stats) {
+                           SegmentResult& result, netlog::Stats& stats, const Filter& filter) {
     std::ifstream input(path, std::ios::binary);
     if (!input.is_open()) {
         return FileStatus::OpenFailed;
@@ -261,15 +307,16 @@ FileStatus analyze_segment(const fs::path& path, const FileSegment& segment,
         [&](std::uint64_t number, netlog::ParseError error) {
             result.bad_lines.push_back({number, error});
         },
-        result.summary, stats);
+        result.summary, stats, filter);
     return offset == segment.end && !input.bad() ? FileStatus::Ok : FileStatus::ReadFailed;
 }
 
 FileStatus analyze_parallel(const std::vector<fs::path>& files,
                             const std::vector<FileSegment>& segments,
-                            std::size_t worker_count, ReadSummary& summary, netlog::Stats& stats) {
+                            std::size_t worker_count, ReadSummary& summary, netlog::Stats& stats,
+                            const Filter& filter) {
     // 每个线程独占一张统计表，每个片段独占一个结果槽。
-    std::vector<netlog::Stats> local_stats(worker_count);
+    std::vector<netlog::Stats> local_stats(worker_count, netlog::Stats(stats.bucket_seconds()));
     std::vector<SegmentResult> results(segments.size());
     std::atomic<std::size_t> next_task{0};
 
@@ -283,7 +330,7 @@ FileStatus analyze_parallel(const std::vector<fs::path>& files,
             const auto& segment = segments[index];
             auto& result = results[index];
             try {
-                result.status = analyze_segment(files[segment.file_id], segment, result, local);
+                result.status = analyze_segment(files[segment.file_id], segment, result, local, filter);
                 if (result.status == FileStatus::Ok) {
                     continue;
                 }
@@ -342,7 +389,7 @@ FileStatus analyze_parallel(const std::vector<fs::path>& files,
     return FileStatus::Ok;
 }
 
-int analyze_input(const fs::path& input, std::size_t requested_threads, std::size_t top_k) {
+int analyze_input(const fs::path& input, const AnalysisOptions& options) {
     std::vector<fs::path> files;
     try {
         files = collect_files(input);
@@ -355,10 +402,10 @@ int analyze_input(const fs::path& input, std::size_t requested_threads, std::siz
     }
 
     ReadSummary summary;
-    netlog::Stats stats;
+    netlog::Stats stats(options.bucket_seconds);
     FileStatus status;
-    if (requested_threads == 1) {
-        status = analyze_serial(files, summary, stats);
+    if (options.threads == 1) {
+        status = analyze_serial(files, summary, stats, options.filter);
     } else {
         std::vector<FileSegment> segments;
         try {
@@ -370,18 +417,19 @@ int analyze_input(const fs::path& input, std::size_t requested_threads, std::siz
             std::cerr << "Cannot split input: " << error.what() << '\n';
             return 3;
         }
-        const auto worker_count = std::min(requested_threads, segments.size());
-        status = worker_count == 1 ? analyze_serial(files, summary, stats)
-                                   : analyze_parallel(files, segments, worker_count, summary, stats);
+        const auto worker_count = std::min(options.threads, segments.size());
+        status = worker_count == 1
+            ? analyze_serial(files, summary, stats, options.filter)
+            : analyze_parallel(files, segments, worker_count, summary, stats, options.filter);
     }
     if (status == FileStatus::OpenFailed) {
         return 3;
     }
-    print_summary(summary);
+    print_summary(summary, options.filter.active());
     if (status == FileStatus::ReadFailed) {
         return 3;
     }
-    print_report(std::cout, stats, top_k);
+    print_report(std::cout, stats, options.top_k);
     return 0;
 }
 
@@ -391,36 +439,56 @@ bool parse_positive_size(std::string_view text, std::size_t& count) {
     return result.ec == std::errc{} && result.ptr == end && count > 0;
 }
 
+bool parse_seconds(std::string_view text, std::int64_t& seconds) {
+    if (text.empty() || text.front() < '0' || text.front() > '9') {
+        return false;
+    }
+    const auto* end = text.data() + text.size();
+    const auto parsed = std::from_chars(text.data(), end, seconds);
+    return parsed.ec == std::errc{} && parsed.ptr == end;
+}
+
 int run(int argc, char* argv[]) {
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
         print_usage(std::cout);
         return 0;
     }
     std::string_view input;
-    std::size_t threads = 1;
-    std::size_t top_k = 3;
+    AnalysisOptions options;
     bool has_threads = false;
     bool has_top = false;
     int i = 1;
     for (; i + 1 < argc; i += 2) {
         const std::string_view option = argv[i];
         const std::string_view value = argv[i + 1];
+        std::int64_t seconds = 0;
         if (option == "--input" && input.empty() && !value.empty()) {
             input = value;
-        } else if (option == "--threads" && !has_threads && parse_positive_size(value, threads)) {
+        } else if (option == "--threads" && !has_threads && parse_positive_size(value, options.threads)) {
             has_threads = true;
-        } else if (option == "--top" && !has_top && parse_positive_size(value, top_k)) {
+        } else if (option == "--top" && !has_top && parse_positive_size(value, options.top_k)) {
             has_top = true;
+        } else if (option == "--device" && options.filter.device.empty() && !value.empty()) {
+            options.filter.device = value;
+        } else if (option == "--since" && !options.filter.since && parse_seconds(value, seconds)) {
+            options.filter.since = seconds;
+        } else if (option == "--until" && !options.filter.until && parse_seconds(value, seconds)) {
+            options.filter.until = seconds;
+        } else if (option == "--bucket" && options.bucket_seconds == 0
+                   && parse_seconds(value, seconds) && seconds > 0) {
+            options.bucket_seconds = seconds;
         } else {
             break;
         }
     }
-    if (i != argc || input.empty()) {
+    const auto& filter = options.filter;
+    const bool reversed_range = filter.since && filter.until && *filter.since >= *filter.until;
+    if (i != argc || input.empty() || reversed_range) {
         std::cerr << "Invalid command line.\n";
         print_usage(std::cerr);
         return 2;
     }
-    return analyze_input(fs::path(input), threads, top_k);
+    return analyze_input(fs::path(input), options);
 }
 
 }  // namespace

@@ -2,7 +2,7 @@
 
 项目简称 `netlog`。读取模拟设备运行日志，逐步实现设备指标统计、事件 Top-K 和按文件分配任务的多线程分析，作为个人工程学习项目。
 
-**当前支持单文件和目录的串行或并行分析。** 程序逐行读取并校验日志，输出读入计数、设备指标和事件 Top-K，默认显示前 3 种事件。
+**当前支持单文件和目录的串行或并行分析。** 程序逐行读取并校验日志，输出读入计数、设备指标和事件 Top-K，默认显示前 3 种事件。可以按设备和时间筛选，也可以按固定时间窗口汇总。
 
 ## 日志格式
 
@@ -190,7 +190,34 @@ ParseResult parse_line(std::string_view line);
 
 逐行读取不会保存整个文件，内存主要随最长一行变化。当前未设置行长度上限，每条坏行都会打印诊断；这是本地学习版本，后续处理大规模数据时可以增加长度限制与诊断限额。读权限不足和读到一半出现 I/O 故障的处理分支已写入，但不属于当前自动化测试覆盖范围。
 
-建议阅读顺序：`record.h` → `parser.h` → `parser.cpp` → `main.cpp` → 测试。下一步支持筛选。
+建议阅读顺序：`record.h` → `parser.h` → `parser.cpp` → `main.cpp` → 测试。
+
+## 用时间窗口定位异常
+
+`--device ID` 精确匹配设备，`--since UNIX_SEC` 包含起点，`--until UNIX_SEC` 排除终点。同时使用多个筛选条件时，记录必须全部满足。时间参数接受非负 Unix 秒，两个边界都给出时要求 `since < until`。`--bucket SECONDS` 需要正整数，只显示有记录的窗口，起点按 Unix 秒对齐，可能早于筛选起点。
+
+`read_lines`、`valid_records` 和 `invalid_records` 描述完整输入。有筛选时，`matched_records` 表示实际纳入设备统计、时间窗口和事件 Top-K 的记录数。
+
+`data/incident/` 有两个日志文件，模拟 `dev01` 中间一分钟的错误高峰。先看三分钟：
+
+~~~bash
+./build/netlog --input data/incident --threads 4 \
+  --device dev01 --since 120 --until 300 --bucket 60
+~~~
+
+| 窗口起点（Unix 秒） | 请求数 | 错误数 | 错误率 |
+|---:|---:|---:|---:|
+| 120 | 3 | 0 | 0% |
+| 180 | 4 | 3 | 75% |
+| 240 | 3 | 0 | 0% |
+
+再缩小到 `[180, 240)`，查看该分钟的高频事件：
+
+~~~bash
+./build/netlog --input data/incident --device dev01 --since 180 --until 240 --top 2
+~~~
+
+这时匹配 4 条记录，事件前两名为 `TIMEOUT 2`、`CRC_ERROR 1`。样例中的坏行在筛选前就会报告，便于同时核对输入质量。
 
 ## 手工样例与大数据生成
 
