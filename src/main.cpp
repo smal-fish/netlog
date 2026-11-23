@@ -33,7 +33,7 @@ struct ReadSummary {
 };
 
 void print_usage(std::ostream& out) {
-    out << "Usage: netlog --input <file-or-directory> [--threads N]\n"
+    out << "Usage: netlog --input <file-or-directory> [--threads N] [--top K]\n"
         << "       netlog --help\n";
 }
 
@@ -43,7 +43,7 @@ void print_summary(const ReadSummary& summary) {
               << "invalid_records=" << summary.invalid_records << '\n';
 }
 
-void print_report(std::ostream& out, const netlog::Stats& stats) {
+void print_report(std::ostream& out, const netlog::Stats& stats, std::size_t top_k) {
     out << "devices:\n"
         << "device_id requests errors error_rate avg_us max_us\n";
     out << std::fixed << std::setprecision(2);
@@ -56,8 +56,8 @@ void print_report(std::ostream& out, const netlog::Stats& stats) {
             << device.max_duration_us << '\n';
     }
 
-    out << "top_events (up to 3):\n";
-    for (const auto& [event, count] : stats.top_events(3)) {
+    out << "top_events (up to " << top_k << "):\n";
+    for (const auto& [event, count] : stats.top_events(top_k)) {
         out << event << ' ' << count << '\n';
     }
 }
@@ -342,7 +342,7 @@ FileStatus analyze_parallel(const std::vector<fs::path>& files,
     return FileStatus::Ok;
 }
 
-int analyze_input(const fs::path& input, std::size_t requested_threads) {
+int analyze_input(const fs::path& input, std::size_t requested_threads, std::size_t top_k) {
     std::vector<fs::path> files;
     try {
         files = collect_files(input);
@@ -381,11 +381,11 @@ int analyze_input(const fs::path& input, std::size_t requested_threads) {
     if (status == FileStatus::ReadFailed) {
         return 3;
     }
-    print_report(std::cout, stats);
+    print_report(std::cout, stats, top_k);
     return 0;
 }
 
-bool parse_thread_count(std::string_view text, std::size_t& count) {
+bool parse_positive_size(std::string_view text, std::size_t& count) {
     const auto* end = text.data() + text.size();
     const auto result = std::from_chars(text.data(), end, count);
     return result.ec == std::errc{} && result.ptr == end && count > 0;
@@ -398,15 +398,19 @@ int run(int argc, char* argv[]) {
     }
     std::string_view input;
     std::size_t threads = 1;
+    std::size_t top_k = 3;
     bool has_threads = false;
+    bool has_top = false;
     int i = 1;
     for (; i + 1 < argc; i += 2) {
         const std::string_view option = argv[i];
         const std::string_view value = argv[i + 1];
         if (option == "--input" && input.empty() && !value.empty()) {
             input = value;
-        } else if (option == "--threads" && !has_threads && parse_thread_count(value, threads)) {
+        } else if (option == "--threads" && !has_threads && parse_positive_size(value, threads)) {
             has_threads = true;
+        } else if (option == "--top" && !has_top && parse_positive_size(value, top_k)) {
+            has_top = true;
         } else {
             break;
         }
@@ -416,7 +420,7 @@ int run(int argc, char* argv[]) {
         print_usage(std::cerr);
         return 2;
     }
-    return analyze_input(fs::path(input), threads);
+    return analyze_input(fs::path(input), threads, top_k);
 }
 
 }  // namespace

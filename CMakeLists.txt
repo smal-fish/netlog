@@ -52,7 +52,7 @@ if(BUILD_TESTING)
     foreach(cli_case IN ITEMS
         sample empty crlf no_final_newline continue_after_bad_lines all_invalid
         top_cutoff_and_device_order total_duration_overflow missing_file directory directory_split directory_overflow
-        no_arguments missing_input_value unknown_option extra_option help
+        no_arguments missing_input_value unknown_option extra_option help custom_top
         parallel_matches_serial parallel_single_file parallel_overflow parallel_worker_error segment_boundaries
         fixture_aggregation fixture_top-k fixture_mixed
     )
