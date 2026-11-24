@@ -1,6 +1,6 @@
 #pragma once
 
-#include "netlog/record.h"
+#include "record.h"
 
 #include <string_view>
 #include <variant>

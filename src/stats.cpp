@@ -37,12 +37,14 @@ Stats::Stats(std::int64_t bucket_seconds) : bucket_seconds_(bucket_seconds) {
 
 void Stats::add(const Record& record) {
     std::int64_t bucket_start = 0;
+    DeviceStats* bucket_totals = nullptr;
     if (bucket_seconds_ > 0) {
         // timestamp 来自已校验的非负 Unix 秒，按窗口宽度向下对齐。
         bucket_start = record.timestamp - record.timestamp % bucket_seconds_;
         const auto bucket = buckets_.find(bucket_start);
         if (bucket != buckets_.end()) {
             check_bucket_duration(bucket_start, bucket->second.total_duration_us, record.duration_us);
+            bucket_totals = &bucket->second;
         }
     }
 
@@ -54,7 +56,10 @@ void Stats::add(const Record& record) {
     ++events_[record.event_code];
     add_totals(device, request);
     if (bucket_seconds_ > 0) {
-        add_totals(buckets_[bucket_start], request);
+        if (!bucket_totals) {
+            bucket_totals = &buckets_[bucket_start];
+        }
+        add_totals(*bucket_totals, request);
     }
 }
 

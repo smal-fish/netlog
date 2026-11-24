@@ -1,5 +1,5 @@
-#include "netlog/parser.h"
-#include "netlog/stats.h"
+#include "../include/netlog/parser.h"
+#include "../include/netlog/stats.h"
 
 #include <algorithm>
 #include <atomic>
